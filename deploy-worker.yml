@@ -1,0 +1,98 @@
+name: Deploy Cloudflare Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "wrangler.toml"
+      - "package.json"
+      - ".github/workflows/deploy-worker.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # One-time helper. If B2_CORS_KEY_ID / B2_CORS_APPLICATION_KEY do not exist,
+      # this step safely skips itself.
+      - name: Configure Backblaze B2 direct-upload CORS
+        env:
+          B2_CORS_KEY_ID: ${{ secrets.B2_CORS_KEY_ID }}
+          B2_CORS_APPLICATION_KEY: ${{ secrets.B2_CORS_APPLICATION_KEY }}
+          B2_REGION: "us-west-004"
+          B2_BUCKET_NAME: "gehiuriko-android-builder-turbo"
+          FRONTEND_ORIGIN: "https://gehiuriko.github.io"
+        run: |
+          set -euo pipefail
+          if [ -z "${B2_CORS_KEY_ID:-}" ] || [ -z "${B2_CORS_APPLICATION_KEY:-}" ]; then
+            echo "Temporary B2 CORS key not configured; skipping CORS setup."
+            exit 0
+          fi
+
+          python -m pip install --quiet boto3
+
+          python - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
+
+          region = os.environ["B2_REGION"]
+          bucket = os.environ["B2_BUCKET_NAME"]
+          origin = os.environ["FRONTEND_ORIGIN"]
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=f"https://s3.{region}.backblazeb2.com",
+              region_name=region,
+              aws_access_key_id=os.environ["B2_CORS_KEY_ID"],
+              aws_secret_access_key=os.environ["B2_CORS_APPLICATION_KEY"],
+              config=Config(signature_version="s3v4"),
+          )
+
+          cors = {
+              "CORSRules": [
+                  {
+                      "ID": "android-builder-direct-upload",
+                      "AllowedOrigins": [origin],
+                      "AllowedMethods": ["GET", "HEAD", "PUT"],
+                      "AllowedHeaders": ["*"],
+                      "ExposeHeaders": ["ETag"],
+                      "MaxAgeSeconds": 3600,
+                  }
+              ]
+          }
+
+          s3.put_bucket_cors(Bucket=bucket, CORSConfiguration=cors)
+          print(f"OK: S3 CORS applied to {bucket} for {origin}")
+          print("Allowed methods: GET, HEAD, PUT; exposed header: ETag")
+          PY
+
+      - name: Deploy Worker and sync Worker secrets
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          secrets: |
+            GITHUB_TOKEN
+            B2_KEY_ID
+            B2_APPLICATION_KEY
+            BUILDER_KEY
+        env:
+          GITHUB_TOKEN: ${{ secrets.BUILDER_GITHUB_TOKEN }}
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          BUILDER_KEY: ${{ secrets.BUILDER_KEY }}
