@@ -1,0 +1,16 @@
+{
+  "name": "android-builder-turbo-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "setup-cors": "node setup-b2-cors.js"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
